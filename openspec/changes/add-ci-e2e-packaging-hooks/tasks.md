@@ -23,7 +23,7 @@
 
 - [x] 4.1 在 `ci.yml` 新增 `e2e` job：矩阵 `windows-latest` 与 `ubuntu-latest`，Ubuntu 用 `xvfb-run -a npm run test:electron` 包装，缓存 `.vscode-test`（key 含 `runner.os` 与 `package-lock.json` 哈希），`timeout-minutes: 25`，`fail-fast: false`，不使用 `continue-on-error`；验证方式：推送后两个 `e2e` job 均为成功，日志中出现 `[electron-test] schema, grid and external write verified`
 - [x] 4.2 确认 Ubuntu job 确实通过虚拟显示启动、Windows job 未依赖 xvfb；验证方式：检查两个 job 的命令行与日志中 VS Code 启动无 display 错误
-- [ ] 4.3 确认缓存生效；验证方式：同分支连续触发两次，第二次 run 的缓存步骤为命中且 E2E job 耗时明显下降
+- [x] 4.3 确认缓存生效；验证方式：同分支连续触发两次，第二次 run 的缓存步骤为命中且 E2E job 耗时明显下降
 - [x] 4.4 在 `README.md` 的 CI 说明中记录 `e2e / windows-latest`、`e2e / ubuntu-latest` 两个检查名称；验证方式：名称与 Actions 中 job 显示名逐字一致
 
 ## 5. 打包验证 job

@@ -85,6 +85,7 @@ verify                 verify:unit + test:unit:integration
 - **husky 的 `prepare` 在 CI 或生产安装中执行** → husky v9 在无 `.git` 时安全退出；但若未来使用 `npm ci --omit=dev`，`prepare` 会因缺少 husky 而失败，需要在引入时避免该安装方式。
 - **钩子拖慢提交/推送** → pre-commit 约 15 秒、pre-push 约 30 秒，且集成测试与 E2E 不在提交时机运行；紧急情况允许 `--no-verify`，README 说明这是例外而非常态。若 pre-commit 因机器较慢明显超出 30 秒，优先考虑把单测并行度调到 CPU 数而不是取消单测。
 - **package job 增加约 1–2 分钟** → 与 core 并行执行，不延长关键路径；只覆盖两个目标平台。
+- **既有协议测试存在低概率时序 flaky** → 首次 pre-push 出现过 1 个单测失败，随后 8 次本地连续运行与 2 次 CI 运行均全绿；若 CI 再次复现，单独定位该用例的等待逻辑，不改变本次 CI 结构。
 - **验证的是 helper 而不是完整扩展** → 扩展入口与 webview 的行为由 E2E 覆盖；两者合起来接近用户路径，但仍不等于"安装 vsix 后启动 VS Code"。这是有意识的边界，记录在 Non-Goals。
 - **Windows 解压实现差异** → 固定为"复制成 .zip + Expand-Archive"；Linux 固定 `unzip`，避免隐式依赖。
 
