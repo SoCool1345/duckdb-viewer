@@ -1,0 +1,117 @@
+{
+  "name": "duckdb-viewer",
+  "displayName": "DuckDB Viewer",
+  "description": "Browse DuckDB database files read-only, without holding a file lock.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "duckdbViewer.database",
+        "displayName": "DuckDB Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.duckdb"
+          },
+          {
+            "filenamePattern": "*.ddb"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "duckdbViewer.openFile",
+        "title": "DuckDB: Open Database File"
+      },
+      {
+        "command": "duckdbViewer.openWith",
+        "title": "Open With DuckDB Viewer"
+      },
+      {
+        "command": "duckdbViewer.releaseLock",
+        "title": "DuckDB: Release Database Lock"
+      },
+      {
+        "command": "duckdbViewer.showDiagnostics",
+        "title": "DuckDB: Show Lock Diagnostics"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "duckdbViewer.openWith",
+          "when": "resourceExtname == .duckdb || resourceExtname == .ddb",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "duckdbViewer.openWith",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DuckDB Viewer",
+      "properties": {
+        "duckdbViewer.pageSize": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 2000,
+          "description": "Number of rows fetched per page."
+        },
+        "duckdbViewer.operationTimeoutMs": {
+          "type": "number",
+          "default": 20000,
+          "minimum": 1000,
+          "description": "Maximum duration of a single database operation. The handle is released when the operation times out."
+        },
+        "duckdbViewer.maxCellBytes": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 64,
+          "description": "Cells larger than this are truncated in the grid; the full value can be requested explicitly."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run compile && npm run fixtures && vitest run",
+    "test:integration": "npm run compile && npm run fixtures && vitest run --config vitest.integration.config.mts",
+    "test:electron": "npm run compile && npm run fixtures && node scripts/run-electron-test.mjs",
+    "test:all": "npm run test && npm run test:integration",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "vscode:prepublish": "node build.mjs",
+    "package:win32-x64": "vsce package --allow-missing-repository --target win32-x64 --out duckdb-viewer-0.1.0-win32-x64.vsix",
+    "package:linux-x64": "vsce package --allow-missing-repository --target linux-x64 --out duckdb-viewer-0.1.0-linux-x64.vsix",
+    "package:darwin-arm64": "vsce package --allow-missing-repository --target darwin-arm64 --out duckdb-viewer-0.1.0-darwin-arm64.vsix"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.6-r.2"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "mocha": "^12.0.3",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

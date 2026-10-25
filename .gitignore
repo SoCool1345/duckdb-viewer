@@ -4,6 +4,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.tmp/
+.vscode-test/
+node_modules/
+*.vsix
 .pytest_cache/
 .ruff_cache/
 *.duckdb
