@@ -25,7 +25,7 @@
 - [x] 4.2 确认 Ubuntu job 确实通过虚拟显示启动、Windows job 未依赖 xvfb；验证方式：检查两个 job 的命令行与日志中 VS Code 启动无 display 错误
 - [x] 4.3 确认缓存生效；验证方式：同分支连续触发两次，第二次 run 的缓存步骤为命中且 E2E job 耗时明显下降
 - [x] 4.4 在 `README.md` 的 CI 说明中记录 `e2e / windows-latest`、`e2e / ubuntu-latest` 两个检查名称；验证方式：名称与 Actions 中 job 显示名逐字一致
-- [ ] 4.5 在 E2E job 中先解析 VS Code stable 版本，把版本纳入缓存键，并通过 `VSCODE_VERSION` 把同一版本传给启动器；验证方式：首次运行缓存 miss 并安装该版本，第二次运行同版本命中，且缓存键中的版本与启动器日志一致
+- [x] 4.5 在 E2E job 中先解析 VS Code stable 版本，把版本纳入缓存键，并通过 `VSCODE_VERSION` 把同一版本传给启动器；验证方式：首次运行缓存 miss 并安装该版本，第二次运行同版本命中，且缓存键中的版本与启动器日志一致
 
 ## 5. 打包验证 job
 
