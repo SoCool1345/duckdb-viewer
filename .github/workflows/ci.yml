@@ -28,8 +28,102 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Build
+        run: npm run compile
+
+      - name: Generate fixtures
+        run: npm run fixtures
+
       - name: Unit and protocol tests
-        run: npm test
+        run: npm run test:unit
 
       - name: Lock safety integration tests
-        run: npm run test:integration
+        run: npm run test:unit:integration
+
+  e2e:
+    name: e2e / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            command: npm run test:electron
+          - os: ubuntu-latest
+            command: xvfb-run -a npm run test:electron
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache VS Code download
+        uses: actions/cache@v4
+        with:
+          path: .vscode-test
+          key: vscode-${{ runner.os }}-stable-${{ hashFiles('package-lock.json') }}
+
+      - name: Electron end-to-end tests
+        run: ${{ matrix.command }}
+
+  package:
+    name: package / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win32-x64
+          - os: ubuntu-latest
+            target: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate fixtures
+        run: npm run fixtures
+
+      - name: Package vsix
+        run: npm run package:${{ matrix.target }}
+
+      - name: Extract vsix (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'vsix'
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item (Get-ChildItem *.vsix).FullName package.zip
+          Expand-Archive -Path package.zip -DestinationPath $target
+
+      - name: Extract vsix (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          target="$RUNNER_TEMP/vsix"
+          rm -rf "$target"
+          mkdir -p "$target"
+          unzip -q duckdb-viewer-*.vsix -d "$target"
+
+      - name: Verify packaged helper
+        shell: bash
+        run: node scripts/verify-packaged.mjs "${{ runner.temp }}/vsix/extension/dist/helper.js" .tmp/fixtures/fixture.duckdb
+
+      - name: Upload vsix
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: '*.vsix'

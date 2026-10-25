@@ -64,7 +64,26 @@ npm run compile      # 构建 dist/extension.js、dist/helper.js、webview 资�
 npm test             # 单元 + 协议测试
 npm run test:integration   # 锁不变量集成测试
 npm run fixtures     # 重建测试用 DuckDB 库（.tmp/fixtures）
+npm run verify:unit  # 与 pre-commit 相同：typecheck + 构建 + fixtures + 单元/协议测试
+npm run verify       # 与 pre-push 相同：上面全部 + 锁不变量集成测试
 ```
+
+本地钩子在 `npm install` 后自动启用（无需手动配置）：
+
+| 时机 | 运行内容 | 参考耗时 |
+|---|---|---|
+| `git commit` | typecheck + 构建 + fixtures + 78 个单元/协议测试 | 约 15–20 秒 |
+| `git push` | 上面全部 + 4 个锁不变量集成测试 | 约 30 秒 |
+
+紧急情况可以用 `git commit --no-verify` / `git push --no-verify` 跳过，但这是例外而非常态：CI 会执行同一套检查，跳过只改变反馈时间，不改变最终结果。
+
+CI（`.github/workflows/ci.yml`）在 Windows 与 Ubuntu 上运行：
+
+- `windows-latest / node 20`、`ubuntu-latest / node 20`：typecheck、单元/协议测试、锁集成测试
+- `e2e / windows-latest`、`e2e / ubuntu-latest`：在真实 VS Code 宿主中打开 fixture 并验证查看器空闲时可被外部写入（Ubuntu 通过 `xvfb-run` 提供虚拟显示）
+- `package / win32-x64`、`package / linux-x64`：打包目标平台 vsix，解压后用独立 Node 进程验证其中的 helper
+
+这些 job 名称同时是分支保护的检查名称；改名会让分支保护静默失效。
 
 端到端冒烟测试（会在真实扩展宿主中打开 fixture 库）：
 
