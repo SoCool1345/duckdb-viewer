@@ -34,7 +34,7 @@
 - [x] 5.3 在 `ci.yml` 中把 vsix 解压到 runner 临时目录（Windows `$env:RUNNER_TEMP\vsix`，Linux `$RUNNER_TEMP/vsix`），再运行 `node scripts/verify-packaged.mjs`；验证方式：两个 job 输出 `openHandles at rest: 0` 与 `disposed: true`，本地按同一路径形式执行通过
 - [x] 5.4 上传 vsix 为构建产物；验证方式：从 run 页面下载 artifact，确认其中包含 `extension/dist/helper.js` 与对应平台的 `@duckdb/node-bindings-*`
 - [x] 5.5 在 `README.md` 的 CI 说明中记录 `package / win32-x64`、`package / linux-x64` 两个检查名称；验证方式：名称与 Actions 中 job 显示名逐字一致
-- [ ] 5.6 在 `scripts/verify-packaged.mjs` 中断言 `main.users` 表及其 `id`、`name` 列；验证方式：真实 fixture 输出 `fixture schema: main.users(id BIGINT, name VARCHAR)`，返回空 schema 的模拟 helper 以非 0 退出
+- [x] 5.6 在 `scripts/verify-packaged.mjs` 中断言 `main.users` 表及其 `id`、`name` 列；验证方式：真实 fixture 输出 `fixture schema: main.users(id BIGINT, name VARCHAR)`，返回空 schema 的模拟 helper 以非 0 退出
 
 ## 6. 集成验收与启用
 
