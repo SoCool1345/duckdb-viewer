@@ -84,14 +84,24 @@ const schema = await send(2, 'listSchema', { dbPath: fixture });
 const status = await send(3, 'status', {});
 const dispose = await send(4, 'dispose', {});
 
+const groups = schema.result?.schemas;
+const main = Array.isArray(groups) ? groups.find((group) => group.name === 'main') : undefined;
+const users = main?.objects?.find((object) => object.name === 'users');
+const columns = users?.columns ?? [];
+const hasId = columns.some((column) => column.name === 'id' && column.dataType === 'BIGINT');
+const hasName = columns.some((column) => column.name === 'name' && column.dataType === 'VARCHAR');
+const schemaVerified = users?.kind === 'table' && hasId && hasName;
+
 console.log('version:', opened.result?.version);
-console.log('schemas:', schema.result?.schemas?.map((group) => `${group.name}(${group.objects.length})`).join(', '));
+console.log('schemas:', groups?.map((group) => `${group.name}(${group.objects.length})`).join(', '));
+console.log('fixture schema:', schemaVerified ? 'main.users(id BIGINT, name VARCHAR)' : 'unexpected');
 console.log('openHandles at rest:', status.result?.openHandles);
 console.log('disposed:', dispose.result?.disposed);
 
 const ok =
   opened.ok === true &&
   schema.ok === true &&
+  schemaVerified &&
   status.ok === true &&
   dispose.ok === true &&
   status.result?.openHandles === 0 &&

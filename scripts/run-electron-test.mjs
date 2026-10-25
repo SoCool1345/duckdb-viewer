@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const root = path.resolve('.');
 const executable = process.env.VSCODE_EXECUTABLE;
+const version = process.env.VSCODE_VERSION?.trim();
 
 // The electron suite writes to the database, so give it a disposable copy.
 const fixtureSource = path.join(root, '.tmp', 'fixtures', 'fixture.duckdb');
@@ -13,10 +14,10 @@ fs.rmSync(fixture, { force: true });
 fs.rmSync(`${fixture}.wal`, { force: true });
 fs.copyFileSync(fixtureSource, fixture);
 
-console.log(`[electron-test] vscode: ${executable ?? 'download stable'}`);
+console.log(`[electron-test] vscode: ${executable ?? version ?? 'download stable'}`);
 
 await runTests({
-  ...(executable ? { vscodeExecutablePath: executable } : {}),
+  ...(executable ? { vscodeExecutablePath: executable } : version ? { version } : {}),
   extensionDevelopmentPath: root,
   extensionTestsPath: path.join(root, 'test', 'electron', 'suite', 'index.cjs'),
   launchArgs: [

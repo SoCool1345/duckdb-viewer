@@ -88,8 +88,11 @@ CI（`.github/workflows/ci.yml`）在 Windows 与 Ubuntu 上运行：
 端到端冒烟测试（会在真实扩展宿主中打开 fixture 库）：
 
 ```bash
-# VSCODE_EXECUTABLE 指向本机 Code.exe；不设置则下载稳定版 VS Code
+# VSCODE_EXECUTABLE 指向本机 Code.exe；不设置则下载 VS Code
 VSCODE_EXECUTABLE="/path/to/Code.exe" npm run test:electron
+
+# 也可以指定要下载的版本（默认解析最新 stable）
+VSCODE_VERSION="1.143.1" npm run test:electron
 ```
 
 调试：用 VS Code 打开本仓库，按 **F5**，会启动一个加载了本扩展的调试宿主。用 `DuckDB: Open Database File` 打开 `.tmp/fixtures/fixture.duckdb`。

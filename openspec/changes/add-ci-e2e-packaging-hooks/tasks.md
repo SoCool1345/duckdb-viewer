@@ -25,6 +25,7 @@
 - [x] 4.2 确认 Ubuntu job 确实通过虚拟显示启动、Windows job 未依赖 xvfb；验证方式：检查两个 job 的命令行与日志中 VS Code 启动无 display 错误
 - [x] 4.3 确认缓存生效；验证方式：同分支连续触发两次，第二次 run 的缓存步骤为命中且 E2E job 耗时明显下降
 - [x] 4.4 在 `README.md` 的 CI 说明中记录 `e2e / windows-latest`、`e2e / ubuntu-latest` 两个检查名称；验证方式：名称与 Actions 中 job 显示名逐字一致
+- [ ] 4.5 在 E2E job 中先解析 VS Code stable 版本，把版本纳入缓存键，并通过 `VSCODE_VERSION` 把同一版本传给启动器；验证方式：首次运行缓存 miss 并安装该版本，第二次运行同版本命中，且缓存键中的版本与启动器日志一致
 
 ## 5. 打包验证 job
 
@@ -33,6 +34,7 @@
 - [x] 5.3 在 `ci.yml` 中把 vsix 解压到 runner 临时目录（Windows `$env:RUNNER_TEMP\vsix`，Linux `$RUNNER_TEMP/vsix`），再运行 `node scripts/verify-packaged.mjs`；验证方式：两个 job 输出 `openHandles at rest: 0` 与 `disposed: true`，本地按同一路径形式执行通过
 - [x] 5.4 上传 vsix 为构建产物；验证方式：从 run 页面下载 artifact，确认其中包含 `extension/dist/helper.js` 与对应平台的 `@duckdb/node-bindings-*`
 - [x] 5.5 在 `README.md` 的 CI 说明中记录 `package / win32-x64`、`package / linux-x64` 两个检查名称；验证方式：名称与 Actions 中 job 显示名逐字一致
+- [ ] 5.6 在 `scripts/verify-packaged.mjs` 中断言 `main.users` 表及其 `id`、`name` 列；验证方式：真实 fixture 输出 `fixture schema: main.users(id BIGINT, name VARCHAR)`，返回空 schema 的模拟 helper 以非 0 退出
 
 ## 6. 集成验收与启用
 

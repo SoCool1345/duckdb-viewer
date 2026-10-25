@@ -107,9 +107,24 @@ CI MUST 在真实的 VS Code 扩展宿主中执行端到端验证，覆盖 Windo
 - **THEN** 工作流结论为失败
 - **AND** 失败原因可从该步骤日志定位
 
+### Requirement: E2E 缓存与 VS Code 版本绑定
+
+CI MUST 在恢复缓存前解析本次要运行的 VS Code stable 版本，将该版本纳入缓存键，并把同一版本显式传给测试启动器。稳定版更新后 MUST NOT 继续使用旧版本缓存中的可执行文件。
+
+#### Scenario: stable 版本更新
+
+- **WHEN** 稳定版发布了新版本且依赖锁文件未变化
+- **THEN** 缓存键随版本变化，E2E 下载并运行新版本
+- **AND** 不使用旧版本缓存
+
+#### Scenario: 缓存键与启动器一致
+
+- **WHEN** E2E job 运行
+- **THEN** 缓存键中的版本与启动器请求的版本相同
+
 ### Requirement: 发布物必须独立验证
 
-CI MUST 为 win32-x64 与 linux-x64 构建目标平台专属的 vsix，解压后使用不依赖仓库工作目录的 Node 进程验证其中的 helper。验证 MUST 覆盖：helper 能启动并打开 fixture、能返回 schema、静止时打开句柄数为 0、dispose 成功。验证失败 MUST 使工作流失败。
+CI MUST 为 win32-x64 与 linux-x64 构建目标平台专属的 vsix，解压后使用不依赖仓库工作目录的 Node 进程验证其中的 helper。验证 MUST 覆盖：helper 能启动并打开 fixture、返回的 schema 包含 `main.users` 表且含 `id`（BIGINT）与 `name`（VARCHAR）列、静止时打开句柄数为 0、dispose 成功。验证失败 MUST 使工作流失败。
 
 #### Scenario: 打包缺少运行时依赖
 
@@ -117,10 +132,16 @@ CI MUST 为 win32-x64 与 linux-x64 构建目标平台专属的 vsix，解压后
 - **THEN** 验证步骤失败并使工作流失败
 - **AND** 日志指出 helper 启动或加载失败
 
+#### Scenario: schema 缺失或结构不符
+
+- **WHEN** helper 返回空 schema，或缺少 `main.users` / `id` / `name`
+- **THEN** 验证步骤失败并使工作流失败
+- **AND** 日志指出 fixture schema 不符合预期
+
 #### Scenario: 打包产物可用
 
 - **WHEN** 解压后的 helper 打开 fixture
-- **THEN** schema 可读、静止时打开句柄数为 0、dispose 返回成功
+- **THEN** schema 包含 `main.users` 及其 `id`、`name` 列，静止时打开句柄数为 0，dispose 返回成功
 - **AND** 该 vsix 作为工作流产物被保留
 
 ### Requirement: 本地与 CI 共享同一验证入口

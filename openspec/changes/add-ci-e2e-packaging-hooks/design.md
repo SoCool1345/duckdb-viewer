@@ -54,7 +54,8 @@ verify                 verify:unit + test:unit:integration
 ### 4. E2E 作为独立 job，Windows + Ubuntu（xvfb），默认阻断
 
 - Ubuntu 用 `xvfb-run -a npm run test:electron` 提供虚拟显示；Windows 直接运行。
-- 缓存 `.vscode-test`，key 为 `vscode-${{ runner.os }}-stable-${{ hashFiles('package-lock.json') }}`，避免每次下载约 100MB 的 VS Code。
+- 缓存 `.vscode-test`，但 key 必须包含**解析后的 stable 版本**：先用 `scripts/resolve-vscode-version.mjs` 调 `update.code.visualstudio.com/api/releases/stable?released=true` 取最新稳定版，key 写成 `vscode-<os>-<version>-<lock hash>`，并通过 `VSCODE_VERSION` 把同一版本传给启动器（`runTests({ version })`）。否则 stable 更新后会一直命中旧缓存，新下载也无法覆盖同 key 的缓存（GitHub 缓存不可修改）。
+- 版本解析失败时 job 直接失败，而不是退回 `stable`：启动器本身也依赖同一个服务，提前失败不会增加失败面，却能避免"key 与启动器版本不一致"。
 - `timeout-minutes: 25`；`fail-fast: false`。
 - **默认阻断**（不使用 `continue-on-error`）：否则"端到端失败不被忽略"的要求无法成立。
 - **备选**：先 `continue-on-error: true` 观察稳定性——但这会让红灯变成装饰。若上线后出现持续 flaky，再临时降级，并在 tasks 中留下"连续 N 次全绿后恢复阻断"的后续项。
@@ -67,6 +68,7 @@ verify                 verify:unit + test:unit:integration
 - 解压方式按平台区分：Windows 先复制为 `.zip` 再用 `Expand-Archive`；Linux 用 `unzip`。避免依赖 Git Bash 是否带 `unzip`、GNU tar 不支持 zip 等差异。
 - **解压目标必须在仓库工作目录之外**（CI 用 `runner.temp`，本地用系统临时目录）。否则 Node 会从解压目录沿目录树向上解析到仓库自己的 `node_modules`，即使 vsix 漏掉 `@duckdb` 也能"验证通过"——这一点已由负向验证实际发现。
 - `verify-packaged.mjs` 使用 `process.execPath`（runner 上的 Node 20）启动 helper，helper 从解压目录的 `node_modules` 解析 `@duckdb/node-api`，因此能真实暴露 `.vscodeignore` 漏文件。脚本本身必须加固：helper 启动失败或请求超时时必须以非 0 退出，而不是无限等待响应。
+- 验证不只检查 `listSchema` 调用成功：脚本断言 `main.users` 是表，且含 `id BIGINT` 与 `name VARCHAR` 两列。仅检查 `schema.ok` 无法区分"打包坏了但返回了空结构"；空 schema 的模拟 helper 必须以非 0 退出（已用临时 mock helper 验证）。
 - 不新增 macOS job：`package:darwin-arm64` 仍保留为手工脚本，未验证前不应把 darwin 产物当作可信发布物（这一点在 proposal 的非目标中）。
 
 ### 6. job 名称保持稳定，作为分支保护契约
@@ -82,6 +84,7 @@ verify                 verify:unit + test:unit:integration
 
 - **E2E flaky（下载失败、GUI 启动慢、CI 机器负载）** → 缓存 VS Code；测试内部已用 15–20 秒轮询；`timeout-minutes: 25`；失败时优先重跑一次再改代码。若两周内 flaky 超过可接受频率，临时加 `continue-on-error` 并记录恢复条件。
 - **Ubuntu 缺少 `xvfb-run`** → `ubuntu-latest` 镜像通常自带；若缺失，在该 job 增加 `sudo apt-get install -y xvfb`（任务中列为可选回退）。
+- **stable 版本解析依赖 update 服务** → 服务不可达时 E2E job 提前失败；启动器下载同样依赖它，因此不增加新的失败面。需要离线运行时可用 `VSCODE_VERSION` 显式固定版本并跳过解析。
 - **husky 的 `prepare` 在 CI 或生产安装中执行** → husky v9 在无 `.git` 时安全退出；但若未来使用 `npm ci --omit=dev`，`prepare` 会因缺少 husky 而失败，需要在引入时避免该安装方式。
 - **钩子拖慢提交/推送** → pre-commit 约 15 秒、pre-push 约 30 秒，且集成测试与 E2E 不在提交时机运行；紧急情况允许 `--no-verify`，README 说明这是例外而非常态。若 pre-commit 因机器较慢明显超出 30 秒，优先考虑把单测并行度调到 CPU 数而不是取消单测。
 - **package job 增加约 1–2 分钟** → 与 core 并行执行，不延长关键路径；只覆盖两个目标平台。

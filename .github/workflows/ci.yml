@@ -63,14 +63,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve VS Code version
+        id: vscode
+        shell: bash
+        run: echo "version=$(node scripts/resolve-vscode-version.mjs)" >> "$GITHUB_OUTPUT"
+
       - name: Cache VS Code download
         uses: actions/cache@v4
         with:
           path: .vscode-test
-          key: vscode-${{ runner.os }}-stable-${{ hashFiles('package-lock.json') }}
+          key: vscode-${{ runner.os }}-${{ steps.vscode.outputs.version }}-${{ hashFiles('package-lock.json') }}
 
       - name: Electron end-to-end tests
         run: ${{ matrix.command }}
+        env:
+          VSCODE_VERSION: ${{ steps.vscode.outputs.version }}
 
   package:
     name: package / ${{ matrix.target }}
