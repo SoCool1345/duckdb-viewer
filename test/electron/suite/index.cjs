@@ -63,6 +63,8 @@ async function run() {
               busy: candidate.state?.busy,
               schemas: candidate.state?.schemas?.length ?? 0,
               rows: candidate.state?.rows?.length ?? 0,
+              selected: candidate.state?.selected,
+              columnLayout: candidate.state?.columnLayout,
               error: candidate.state?.error?.message,
               lock: candidate.state?.lock,
             }))
@@ -144,10 +146,82 @@ async function run() {
   assert.strictEqual(refreshed.state.busy, false);
   assert.strictEqual(refreshed.state.error, null);
 
+  // Column layout: save it for `users`, close the tab, reopen it, and make
+  // sure the host restores the same layout from global state.
+  await vscode.commands.executeCommand('duckdbViewer.__testControl', 'layout', {
+    schema: 'main',
+    name: 'users',
+    kind: 'table',
+    layout: {
+      version: 1,
+      columns: { id: { width: 240, pinned: true }, name: { hidden: true } },
+    },
+  });
+
+  const laidOut = await poll(async () => {
+    const session = await readSession();
+    if (!session) return undefined;
+    const layout = session.state.columnLayout;
+    return (
+      layout &&
+      layout.columns.id?.width === 240 &&
+      layout.columns.id?.pinned === true &&
+      layout.columns.name?.hidden === true
+    )
+      ? session
+      : undefined;
+  }, 10_000, 'the column layout to be saved');
+  assert.strictEqual(laidOut.state.busy, false);
+
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  await delay(500);
+
+  await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(dbPath), 'duckdbViewer.database');
+  await poll(async () => {
+    const session = await readSession();
+    return session && session.state.status === 'ready' ? session : undefined;
+  }, 20_000, 'the reopened tab to load');
+
+  // The viewer may auto-select another object first; re-open the same object
+  // the layout was saved for, as a user would after reopening the tab.
+  await vscode.commands.executeCommand('duckdbViewer.__testControl', 'select', {
+    schema: 'main',
+    name: 'users',
+    kind: 'table',
+  });
+  const reopened = await poll(async () => {
+    const session = await readSession();
+    if (!session) return undefined;
+    const layout = session.state.columnLayout;
+    return (
+      session.state.selected?.name === 'users' &&
+      session.state.status === 'ready' &&
+      session.state.rows.length > 0 &&
+      session.state.busy === false &&
+      layout &&
+      layout.columns.id?.width === 240 &&
+      layout.columns.id?.pinned === true &&
+      layout.columns.name?.hidden === true
+    )
+      ? session
+      : undefined;
+  }, 20_000, 'the saved column layout to be restored after reopening the tab');
+  assert.ok(reopened, 'column layout should survive closing and reopening the tab');
+
+  // Leave the shared test profile with the default layout for the next run.
+  // (VS Code keeps extension storage in memory during extension tests, so this
+  // reset is mostly defensive; real restarts persist globalState on disk.)
+  await vscode.commands.executeCommand('duckdbViewer.__testControl', 'layout', {
+    schema: 'main',
+    name: 'users',
+    kind: 'table',
+    layout: { version: 1, columns: {} },
+  });
+
   await vscode.commands.executeCommand('duckdbViewer.releaseLock');
   await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
-  console.log('[electron-test] schema, grid and external write verified');
+  console.log('[electron-test] schema, grid, external write and column layout persistence verified');
 }
 
 exports.run = run;

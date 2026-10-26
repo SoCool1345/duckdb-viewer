@@ -1,3 +1,5 @@
+import { isColumnHidden, normalizeLayout } from '../shared/columnLayout';
+import type { ColumnLayout } from '../shared/columnLayout';
 import { emptyState } from '../shared/messages';
 import type { ViewerState, WebviewMessage as WebviewMessageType } from '../shared/messages';
 import type {
@@ -11,6 +13,7 @@ import type {
   SchemaObject,
   SortSpec,
 } from '../shared/protocol';
+import type { ColumnLayoutSource } from './columnLayoutStore';
 import { presentError } from './present';
 import { HelperClient, RpcError } from './rpcClient';
 
@@ -23,6 +26,8 @@ export interface DbSessionOptions {
   pageSize: number;
   operationTimeoutMs: number;
   maxCellBytes: number;
+  /** Per-database-object column width/hidden/pinned settings. */
+  columnLayouts: ColumnLayoutSource;
   /** Poll interval while waiting for another process to release the database. */
   waitIntervalMs?: number;
   onState: (state: ViewerState) => void;
@@ -113,6 +118,12 @@ export class DbSession {
         break;
       case 'clearFilter':
         this.enqueue(() => this.clearFilter());
+        break;
+      case 'setColumnLayout':
+        this.applyColumnLayout(
+          { schema: parsed.schema, name: parsed.name, kind: parsed.kind },
+          parsed.layout,
+        );
         break;
       case 'nextPage':
         this.enqueue(() => this.nextPage());
@@ -284,10 +295,21 @@ export class DbSession {
     if (!selected) return;
     const object = this.findObject(selected);
     if (!object) {
-      this.mutate({ selected: null, columns: [], rows: [], hasMore: false, hasPrev: false, pageIndex: 0 });
+      this.mutate({
+        selected: null,
+        columnLayout: null,
+        columns: [],
+        rows: [],
+        hasMore: false,
+        hasPrev: false,
+        pageIndex: 0,
+      });
       return;
     }
-    this.mutate({ columns: object.columns.map((column) => ({ name: column.name, dataType: column.dataType })) });
+    this.mutate({
+      columns: object.columns.map((column) => ({ name: column.name, dataType: column.dataType })),
+      columnLayout: this.loadColumnLayout(selected),
+    });
   }
 
   private findObject(selection: Selection): SchemaObject | undefined {
@@ -306,7 +328,7 @@ export class DbSession {
     const group = this.state.schemas.find((candidate) => candidate.objects.length > 0);
     const object = group?.objects[0];
     if (!group || !object) {
-      this.mutate({ status: 'ready', selected: null, rows: [], columns: [] });
+      this.mutate({ status: 'ready', selected: null, columnLayout: null, rows: [], columns: [] });
       return;
     }
     await this.selectObject({ schema: group.name, name: object.name, kind: object.kind });
@@ -318,6 +340,7 @@ export class DbSession {
     if (!object) return;
     this.mutate({
       selected: selection,
+      columnLayout: this.loadColumnLayout(selection),
       columns: object.columns.map((column) => ({ name: column.name, dataType: column.dataType })),
       sort: null,
       filter: null,
@@ -330,6 +353,44 @@ export class DbSession {
       status: 'ready',
     });
     await this.loadPage(this.firstCursor(), 0);
+  }
+
+  private loadColumnLayout(selection: Selection): ColumnLayout {
+    return this.options.columnLayouts.load(this.options.dbPath, selection);
+  }
+
+  /**
+   * Layout changes are pure presentation. The one exception is hiding the
+   * column the grid is currently sorted by: the sort direction can no longer
+   * be shown, so it is cleared and the first page is fetched again through
+   * the regular request queue.
+   */
+  private applyColumnLayout(selection: Selection, raw: ColumnLayout): void {
+    const selected = this.state.selected;
+    if (
+      !selected ||
+      selected.schema !== selection.schema ||
+      selected.name !== selection.name ||
+      selected.kind !== selection.kind
+    ) {
+      return;
+    }
+
+    const layout = normalizeLayout(raw);
+    void this.options.columnLayouts.save(this.options.dbPath, selection, layout).catch((error: unknown) => {
+      console.error('[duckdb-viewer] failed to persist column layout', error);
+    });
+
+    const sort = this.state.sort;
+    if (sort && isColumnHidden(layout, sort.column)) {
+      this.mutate({ columnLayout: layout, sort: null, pageIndex: 0, hasPrev: false });
+      void this.enqueue(async () => {
+        await this.loadPage(this.firstCursor(), 0);
+      });
+      return;
+    }
+
+    this.mutate({ columnLayout: layout });
   }
 
   private firstCursor(): PageCursor {

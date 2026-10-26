@@ -2,9 +2,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { ColumnLayoutStore } from '../src/host/columnLayoutStore';
 import { HelperClient } from '../src/host/rpcClient';
 import { DbSession } from '../src/host/session';
 import type { FetchPageResult, StatusResult } from '../src/shared/protocol';
+import { MemoryMemento } from './helpers/memoryMemento';
 
 const helperPath = path.resolve('dist/helper.js');
 const workDir = path.resolve('.tmp/integration');
@@ -135,6 +137,7 @@ describe('lock safety', () => {
       pageSize: 10,
       operationTimeoutMs: 20_000,
       maxCellBytes: 128,
+      columnLayouts: new ColumnLayoutStore(new MemoryMemento()),
       waitIntervalMs: 50,
       onState: () => undefined,
       onBusyChange: () => undefined,

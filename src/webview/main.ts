@@ -1,5 +1,26 @@
+import {
+  DEFAULT_COLUMN_WIDTH,
+  clampWidth,
+  filledWidths,
+  fixedLayoutRequired,
+  hiddenColumns,
+  hideColumn,
+  materializeWidths,
+  normalizeLayout,
+  pinColumn,
+  resetColumnWidth,
+  resetLayout,
+  setColumnWidth,
+  showAllColumns,
+  stickyOffsets,
+  visibleColumns,
+  type ColumnLayout,
+  type VisibleColumn,
+} from '../shared/columnLayout';
 import type { ViewerState } from '../shared/messages';
+import { searchSchema, type SearchHit } from '../shared/search';
 import { createHandlers } from './handlers';
+import { isComposingEvent, reconcileHighlight, type ColumnHighlight, type ObjectRef } from './interaction';
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 
@@ -12,6 +33,51 @@ const expandedObjects = new Set<string>();
 const collapsedSchemas = new Set<string>();
 let toastTimer: number | undefined;
 
+let searchQuery = '';
+let searchHits: SearchHit[] = [];
+let searchTotal = 0;
+let searchTruncated = false;
+let activeHit = -1;
+let highlight: ColumnHighlight | null = null;
+let pendingJumps: ObjectRef[] = [];
+let revealHighlight = false;
+
+type GridColumn = ViewerState['columns'][number];
+type Selection = NonNullable<ViewerState['selected']>;
+
+interface GridRender {
+  visible: VisibleColumn<GridColumn>[];
+  widths: number[];
+  fixed: boolean;
+}
+
+interface DragState {
+  selection: Selection;
+  columnName: string;
+  position: number;
+  startX: number;
+  startWidth: number;
+  widths: number[];
+  pointerId: number;
+  handle: HTMLElement;
+  visible: VisibleColumn<GridColumn>[];
+  /** False until the first pointermove actually changes a width. */
+  changed: boolean;
+}
+
+function emptyMeasuredWidths(): Record<string, number> {
+  return Object.create(null) as Record<string, number>;
+}
+
+/** Auto-sized column widths captured before switching to a fixed layout. */
+let lastMeasuredWidths = emptyMeasuredWidths();
+let measuredKey = '';
+let renderedGrid: GridRender | null = null;
+let dragState: DragState | null = null;
+let pendingGridState: ViewerState | null = null;
+let menuAnchor: HTMLElement | null = null;
+let menuFocusTarget: HTMLElement | null = null;
+
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) throw new Error(`Missing element: ${id}`);
@@ -22,9 +88,16 @@ function icon(kind: 'table' | 'view'): string {
   return kind === 'table' ? '▦' : '◧';
 }
 
+function objectKey(schema: string, name: string, kind: 'table' | 'view'): string {
+  return `${schema}\u0000${name}\u0000${kind}`;
+}
+
 function renderTree(next: ViewerState): void {
   const tree = el<HTMLElement>('tree');
   tree.textContent = '';
+  const shouldReveal = revealHighlight;
+  revealHighlight = false;
+  let highlightElement: HTMLElement | null = null;
 
   if (next.schemas.length === 0) {
     const empty = document.createElement('p');
@@ -58,7 +131,7 @@ function renderTree(next: ViewerState): void {
       const children = document.createElement('div');
       children.className = 'tree-children';
       for (const object of group.objects) {
-        const key = `${group.name}\u0000${object.name}\u0000${object.kind}`;
+        const key = objectKey(group.name, object.name, object.kind);
         const row = document.createElement('div');
         row.className = 'tree-row object-row';
         if (next.selected?.schema === group.name && next.selected.name === object.name && next.selected.kind === object.kind) {
@@ -82,6 +155,7 @@ function renderTree(next: ViewerState): void {
         name.textContent = `${icon(object.kind)} ${object.name}`;
         name.title = `${object.kind === 'table' ? '表' : '视图'} / ${group.name}`;
         name.addEventListener('click', () => {
+          clearHighlight();
           handlers.selectObject({ schema: group.name, name: object.name, kind: object.kind });
         });
 
@@ -94,6 +168,16 @@ function renderTree(next: ViewerState): void {
           for (const column of object.columns) {
             const line = document.createElement('div');
             line.className = 'column-row';
+            if (
+              highlight &&
+              highlight.schema === group.name &&
+              highlight.objectName === object.name &&
+              highlight.objectKind === object.kind &&
+              highlight.columnName === column.name
+            ) {
+              line.classList.add('highlight');
+              highlightElement = line;
+            }
             const columnName = document.createElement('span');
             columnName.textContent = column.name;
             const type = document.createElement('span');
@@ -109,6 +193,10 @@ function renderTree(next: ViewerState): void {
       schemaNode.appendChild(children);
     }
     tree.appendChild(schemaNode);
+  }
+
+  if (shouldReveal && highlightElement) {
+    highlightElement.scrollIntoView({ block: 'nearest' });
   }
 }
 
@@ -142,8 +230,15 @@ function renderFilter(next: ViewerState): void {
 
 function renderGrid(next: ViewerState): void {
   const grid = el<HTMLTableElement>('grid');
-  grid.textContent = '';
   const empty = el<HTMLElement>('empty');
+
+  closeColumnMenu();
+  grid.textContent = '';
+  grid.className = '';
+  grid.style.width = '';
+  renderedGrid = null;
+  empty.textContent = '';
+  empty.classList.add('hidden');
 
   if (!next.selected) {
     empty.textContent = next.schemas.length === 0 ? '该数据库中没有用户表或视图。' : '从左侧选择一个表或视图。';
@@ -151,38 +246,120 @@ function renderGrid(next: ViewerState): void {
     return;
   }
 
+  const objectKey = `${next.selected.schema}\u0000${next.selected.name}\u0000${next.selected.kind}`;
+  if (objectKey !== measuredKey) {
+    measuredKey = objectKey;
+    lastMeasuredWidths = emptyMeasuredWidths();
+  }
+
+  const layout = normalizeLayout(next.columnLayout);
+  const visible = visibleColumns(next.columns, layout);
+
+  if (visible.length === 0) {
+    if (next.columns.length === 0) {
+      empty.textContent = '该对象没有列。';
+    } else {
+      const message = document.createElement('p');
+      message.textContent = '所有列已隐藏。';
+      const actions = document.createElement('div');
+      actions.className = 'empty-actions';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '显示所有列';
+      button.addEventListener('click', () => sendLayout(showAllColumns(layout)));
+      actions.appendChild(button);
+      empty.append(message, actions);
+    }
+    empty.classList.remove('hidden');
+    return;
+  }
+
   if (next.rows.length === 0 && next.status === 'ready') {
     empty.textContent = next.filter ? '无匹配数据。' : '该对象当前没有数据。';
     empty.classList.remove('hidden');
-  } else {
-    empty.classList.add('hidden');
   }
+
+  const fixed = fixedLayoutRequired(visible);
+  const widths = fixed ? filledWidths(visible, lastMeasuredWidths) : [];
+
+  const colgroup = document.createElement('colgroup');
+  for (let index = 0; index < visible.length; index += 1) {
+    colgroup.appendChild(document.createElement('col'));
+  }
+  grid.appendChild(colgroup);
+
+  let pinnedCount = 0;
+  for (const entry of visible) {
+    if (entry.pinned) pinnedCount += 1;
+  }
+  const lastPinnedPosition = pinnedCount - 1;
 
   const thead = document.createElement('thead');
   const headRow = document.createElement('tr');
-  for (const column of next.columns) {
+  visible.forEach((entry, position) => {
     const th = document.createElement('th');
+    if (entry.pinned) {
+      th.classList.add('pinned');
+      if (position === lastPinnedPosition) th.classList.add('pinned-edge');
+    }
+
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'column-header';
-    const sorted = next.sort?.column === column.name ? next.sort.direction : null;
-    button.textContent = `${column.name}${sorted ? (sorted === 'asc' ? ' ▲' : ' ▼') : ''}`;
-    button.title = `${column.dataType} — 点击切换排序`;
-    button.addEventListener('click', () => handlers.sort({ column: column.name }));
-    th.appendChild(button);
+    const sort = next.sort;
+    const sorted = sort && sort.column === entry.column.name ? sort.direction : null;
+    if (entry.pinned) {
+      const mark = document.createElement('span');
+      mark.className = 'pin-mark';
+      mark.textContent = '⇤';
+      mark.title = '已固定到左侧';
+      button.appendChild(mark);
+    }
+    const label = document.createElement('span');
+    label.className = 'column-label';
+    label.textContent = `${entry.column.name}${sorted ? (sorted === 'asc' ? ' ▲' : ' ▼') : ''}`;
+    button.appendChild(label);
+    button.title = `${entry.column.dataType} — 点击切换排序；右键更多列操作`;
+    button.addEventListener('click', () => handlers.sort({ column: entry.column.name }));
+    button.addEventListener('keydown', (event) => {
+      if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+        event.preventDefault();
+        openColumnMenu(entry, th, button);
+      }
+    });
+
+    const handle = document.createElement('span');
+    handle.className = 'column-resize';
+    handle.title = '拖动调整列宽';
+    handle.setAttribute('aria-hidden', 'true');
+    handle.addEventListener('pointerdown', (event) => startResize(event, entry, position, handle, th));
+
+    th.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openColumnMenu(entry, th, button);
+    });
+
+    th.append(button, handle);
     headRow.appendChild(th);
-  }
+  });
   thead.appendChild(headRow);
   grid.appendChild(thead);
 
   const tbody = document.createElement('tbody');
   for (const [rowIndex, row] of next.rows.entries()) {
     const tr = document.createElement('tr');
-    for (const [columnIndex, cell] of row.cells.entries()) {
+    visible.forEach((entry, position) => {
       const td = document.createElement('td');
+      if (entry.pinned) {
+        td.classList.add('pinned');
+        if (position === lastPinnedPosition) td.classList.add('pinned-edge');
+      }
+      const columnIndex = entry.originalIndex;
+      const cell = row.cells[columnIndex] ?? null;
       if (cell === null) {
         td.textContent = 'NULL';
-        td.className = 'null-cell';
+        td.classList.add('null-cell');
       } else {
         td.textContent = cell;
       }
@@ -192,10 +369,304 @@ function renderGrid(next: ViewerState): void {
         td.addEventListener('dblclick', () => handlers.requestFullCell({ rowIndex, columnIndex }));
       }
       tr.appendChild(td);
-    }
+    });
     tbody.appendChild(tr);
   }
   grid.appendChild(tbody);
+
+  renderedGrid = { visible, widths: fixed ? widths : [], fixed };
+
+  if (fixed) {
+    applyGridWidths(widths);
+  } else {
+    grid.classList.remove('fixed-layout');
+    recordMeasuredWidths(headRow, visible);
+  }
+}
+
+function currentLayout(): ColumnLayout {
+  return normalizeLayout(state?.columnLayout);
+}
+
+function sendLayout(layout: ColumnLayout): void {
+  const selected = state?.selected;
+  if (!selected) return;
+  handlers.setColumnLayout({ ...selected, layout });
+}
+
+/** Pinning needs a fixed layout; capture today's auto widths first. */
+function ensureFixedWidths(layout: ColumnLayout): ColumnLayout {
+  if (renderedGrid?.fixed) return layout;
+  const visible = visibleColumns(state?.columns ?? [], layout);
+  if (!fixedLayoutRequired(visible)) return layout;
+  return materializeWidths(layout, visible, lastMeasuredWidths);
+}
+
+function recordMeasuredWidths(
+  headRow: HTMLTableRowElement,
+  visible: readonly VisibleColumn<GridColumn>[],
+): void {
+  const cells = headRow.children;
+  visible.forEach((entry, index) => {
+    const node = cells[index];
+    if (!(node instanceof HTMLElement)) return;
+    const width = node.getBoundingClientRect().width;
+    if (width > 0) lastMeasuredWidths[entry.column.name] = width;
+  });
+}
+
+function applyGridWidths(widths: readonly number[]): void {
+  const render = renderedGrid;
+  const grid = el<HTMLTableElement>('grid');
+  if (!render) return;
+
+  render.widths = widths.slice();
+  grid.classList.add('fixed-layout');
+
+  grid.querySelectorAll<HTMLTableColElement>('col').forEach((col, index) => {
+    const width = widths[index];
+    if (width !== undefined) col.style.width = `${width}px`;
+  });
+
+  const total = widths.reduce((sum, width) => sum + width, 0);
+  grid.style.width = `${total}px`;
+
+  const offsets = stickyOffsets(widths, render.visible.map((entry) => entry.pinned));
+  grid.querySelectorAll<HTMLTableRowElement>('tr').forEach((row) => {
+    render.visible.forEach((entry, index) => {
+      if (!entry.pinned) return;
+      const cell = row.children[index];
+      if (!(cell instanceof HTMLElement)) return;
+      const left = offsets[index];
+      if (left !== null && left !== undefined) cell.style.left = `${left}px`;
+    });
+  });
+}
+
+/** Switches the current DOM to a fixed layout without a full re-render. */
+function enterFixedLayout(): number[] {
+  const render = renderedGrid;
+  if (!render) return [];
+  if (render.fixed) return render.widths.slice();
+
+  const widths = filledWidths(render.visible, lastMeasuredWidths);
+  renderedGrid = { ...render, widths: widths.slice(), fixed: true };
+  applyGridWidths(widths);
+  return widths;
+}
+
+function startResize(
+  event: PointerEvent,
+  entry: VisibleColumn<GridColumn>,
+  position: number,
+  handle: HTMLElement,
+  th: HTMLElement,
+): void {
+  if (event.button !== 0) return;
+  const selected = state?.selected;
+  const render = renderedGrid;
+  if (!selected || !render) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  closeColumnMenu();
+
+  const startWidth = render.fixed
+    ? (render.widths[position] ?? th.getBoundingClientRect().width)
+    : th.getBoundingClientRect().width;
+
+  dragState = {
+    selection: { ...selected },
+    columnName: entry.column.name,
+    position,
+    startX: event.clientX,
+    startWidth,
+    widths: render.fixed ? render.widths.slice() : [],
+    pointerId: event.pointerId,
+    handle,
+    visible: render.visible.slice(),
+    changed: false,
+  };
+
+  document.body.classList.add('resizing');
+  handle.setPointerCapture(event.pointerId);
+  handle.addEventListener('pointermove', onResizeMove);
+  handle.addEventListener('pointerup', onResizeEnd);
+  handle.addEventListener('pointercancel', onResizeEnd);
+}
+
+function onResizeMove(event: PointerEvent): void {
+  const drag = dragState;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+
+  if (drag.widths.length === 0) {
+    drag.widths = enterFixedLayout();
+    if (drag.widths.length === 0) return;
+  }
+
+  const width = clampWidth(drag.startWidth + event.clientX - drag.startX);
+  drag.widths[drag.position] = width;
+  drag.changed = true;
+  applyGridWidths(drag.widths);
+}
+
+function onResizeEnd(event: PointerEvent): void {
+  const drag = dragState;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  finishResize(drag);
+}
+
+function finishResize(drag: DragState): void {
+  dragState = null;
+  document.body.classList.remove('resizing');
+  drag.handle.removeEventListener('pointermove', onResizeMove);
+  drag.handle.removeEventListener('pointerup', onResizeEnd);
+  drag.handle.removeEventListener('pointercancel', onResizeEnd);
+  if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+
+  // A click on the resize edge without movement must not freeze auto widths.
+  // If a state push was skipped during the drag, apply it now.
+  if (!drag.changed) {
+    const pending = pendingGridState;
+    pendingGridState = null;
+    if (pending) renderGrid(pending);
+    return;
+  }
+
+  // The host's state push after a layout change re-renders the grid with the
+  // latest data and the new layout.
+  pendingGridState = null;
+
+  const measured: Record<string, number> = {};
+  drag.visible.forEach((entry, index) => {
+    const width = drag.widths[index];
+    if (width !== undefined) measured[entry.column.name] = width;
+  });
+
+  let layout = materializeWidths(currentLayout(), drag.visible, measured);
+  const finalWidth = drag.widths[drag.position];
+  if (finalWidth !== undefined) layout = setColumnWidth(layout, drag.columnName, finalWidth);
+  handlers.setColumnLayout({ ...drag.selection, layout });
+
+  // The host ignores a layout whose object is no longer selected; restore the
+  // grid if the selection changed while the pointer was captured.
+  const selected = state?.selected;
+  if (
+    state &&
+    selected &&
+    (selected.schema !== drag.selection.schema ||
+      selected.name !== drag.selection.name ||
+      selected.kind !== drag.selection.kind)
+  ) {
+    renderGrid(state);
+  }
+}
+
+function closeColumnMenu(restoreFocus = false): void {
+  const menu = el<HTMLElement>('column-menu');
+  const wasOpen = !menu.classList.contains('hidden');
+  menu.classList.add('hidden');
+  menu.textContent = '';
+  const focusTarget = menuFocusTarget;
+  menuAnchor = null;
+  menuFocusTarget = null;
+  if (restoreFocus && wasOpen && focusTarget?.isConnected) focusTarget.focus();
+}
+
+function positionColumnMenu(menu: HTMLElement, anchor: HTMLElement): void {
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  const menuRect = menu.getBoundingClientRect();
+  const maxLeft = Math.max(4, window.innerWidth - menuRect.width - 4);
+  const maxTop = Math.max(4, window.innerHeight - menuRect.height - 4);
+  menu.style.left = `${Math.min(Math.max(4, rect.left), maxLeft)}px`;
+  menu.style.top = `${Math.min(Math.max(4, rect.bottom + 2), maxTop)}px`;
+}
+
+function openColumnMenu(
+  entry: VisibleColumn<GridColumn>,
+  anchor: HTMLElement,
+  focusTarget: HTMLElement,
+): void {
+  const next = state;
+  const selected = next?.selected;
+  if (!next || !selected) return;
+
+  closeColumnMenu();
+  menuAnchor = anchor;
+  menuFocusTarget = focusTarget;
+
+  const layout = normalizeLayout(next.columnLayout);
+  const menu = el<HTMLElement>('column-menu');
+  menu.textContent = '';
+
+  const addItem = (label: string, action: () => void, hint?: string): void => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'column-menu-item';
+    item.setAttribute('role', 'menuitem');
+    const text = document.createElement('span');
+    text.textContent = label;
+    item.appendChild(text);
+    if (hint) {
+      const hintNode = document.createElement('span');
+      hintNode.className = 'column-menu-hint';
+      hintNode.textContent = hint;
+      item.appendChild(hintNode);
+    }
+    item.addEventListener('click', () => {
+      closeColumnMenu();
+      action();
+    });
+    menu.appendChild(item);
+  };
+
+  const addSeparator = (): void => {
+    const separator = document.createElement('div');
+    separator.className = 'column-menu-separator';
+    menu.appendChild(separator);
+  };
+
+  const addLabel = (text: string): void => {
+    const label = document.createElement('div');
+    label.className = 'column-menu-label';
+    label.textContent = text;
+    menu.appendChild(label);
+  };
+
+  addItem(
+    '隐藏此列',
+    () => sendLayout(hideColumn(layout, entry.column.name, true)),
+    next.sort?.column === entry.column.name ? '清除排序' : undefined,
+  );
+  addItem(entry.pinned ? '取消固定' : '固定到左侧', () => {
+    const nextLayout = pinColumn(layout, entry.column.name, !entry.pinned);
+    sendLayout(ensureFixedWidths(nextLayout));
+  });
+  addItem('重置列宽', () => {
+    const nextLayout = renderedGrid?.fixed
+      ? setColumnWidth(layout, entry.column.name, DEFAULT_COLUMN_WIDTH)
+      : resetColumnWidth(layout, entry.column.name);
+    sendLayout(nextLayout);
+  });
+
+  const hidden = hiddenColumns(next.columns, layout);
+  if (hidden.length > 0) {
+    addSeparator();
+    addLabel('已隐藏的列');
+    for (const column of hidden) {
+      addItem(`显示 ${column.name}`, () => sendLayout(hideColumn(layout, column.name, false)));
+    }
+    addItem('显示所有列', () => sendLayout(showAllColumns(layout)));
+  }
+
+  addSeparator();
+  addItem('重置本表列设置', () => sendLayout(resetLayout()));
+
+  menu.classList.remove('hidden');
+  positionColumnMenu(menu, anchor);
+  menu.querySelector<HTMLButtonElement>('.column-menu-item')?.focus();
 }
 
 function renderChrome(next: ViewerState): void {
@@ -292,12 +763,129 @@ function renderChrome(next: ViewerState): void {
   el<HTMLElement>('order-note').textContent = next.selected && !next.stableOrder ? '顺序不保证稳定' : '';
 }
 
+function openHit(hit: SearchHit): void {
+  if (hit.kind === 'column') {
+    highlight = { schema: hit.schema, objectName: hit.objectName, objectKind: hit.objectKind, columnName: hit.columnName };
+    pendingJumps.push({ schema: hit.schema, objectName: hit.objectName, objectKind: hit.objectKind });
+    expandedObjects.add(objectKey(hit.schema, hit.objectName, hit.objectKind));
+    collapsedSchemas.delete(hit.schema);
+    revealHighlight = true;
+  } else {
+    highlight = null;
+    pendingJumps = [];
+  }
+  handlers.selectObject({ schema: hit.schema, name: hit.objectName, kind: hit.objectKind });
+  if (state) renderTree(state);
+}
+
+function clearHighlight(): void {
+  if (!highlight) return;
+  highlight = null;
+  pendingJumps = [];
+  if (state) renderTree(state);
+}
+
+function clearSearch(): void {
+  searchQuery = '';
+  activeHit = -1;
+  el<HTMLInputElement>('search-input').value = '';
+  clearHighlight();
+  renderSearch();
+}
+
+function ensureActiveVisible(): void {
+  if (activeHit < 0) return;
+  document.getElementById(`search-hit-${activeHit}`)?.scrollIntoView({ block: 'nearest' });
+}
+
+function renderSearch(): void {
+  const input = el<HTMLInputElement>('search-input');
+  const results = el<HTMLElement>('search-results');
+  const clearButton = el<HTMLButtonElement>('search-clear');
+  const summary = el<HTMLElement>('search-summary');
+  const list = el<HTMLElement>('search-hits');
+
+  const active = searchQuery.trim().length > 0;
+  results.classList.toggle('hidden', !active);
+  clearButton.classList.toggle('hidden', !active);
+  input.setAttribute('aria-expanded', active ? 'true' : 'false');
+
+  if (!active) {
+    searchHits = [];
+    searchTotal = 0;
+    searchTruncated = false;
+    activeHit = -1;
+    summary.textContent = '';
+    list.textContent = '';
+    input.removeAttribute('aria-activedescendant');
+    if (highlight) {
+      highlight = null;
+      pendingJumps = [];
+      if (state) renderTree(state);
+    }
+    return;
+  }
+
+  const result = searchSchema(state?.schemas ?? [], searchQuery);
+  searchHits = result.hits;
+  searchTotal = result.total;
+  searchTruncated = result.truncated;
+  if (activeHit >= searchHits.length) activeHit = searchHits.length - 1;
+
+  summary.textContent =
+    searchTotal > 0 ? `${searchTotal.toLocaleString()} 条结果${searchTruncated ? '（仅显示前 200 条）' : ''}` : '';
+
+  list.textContent = '';
+  if (searchHits.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'tree-empty';
+    empty.textContent = '没有匹配的表、视图或列。';
+    list.appendChild(empty);
+    input.removeAttribute('aria-activedescendant');
+    return;
+  }
+
+  for (const [index, hit] of searchHits.entries()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'search-hit';
+    button.id = `search-hit-${index}`;
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', index === activeHit ? 'true' : 'false');
+    if (index === activeHit) button.classList.add('active');
+
+    const kind = document.createElement('span');
+    kind.className = 'search-hit-kind';
+    kind.textContent = hit.kind === 'object' ? (hit.objectKind === 'table' ? '表' : '视图') : '列';
+
+    const name = document.createElement('span');
+    name.className = 'search-hit-name';
+    name.textContent = hit.kind === 'object' ? `${icon(hit.objectKind)} ${hit.objectName}` : hit.columnName;
+
+    const meta = document.createElement('span');
+    meta.className = 'search-hit-meta';
+    meta.textContent = hit.kind === 'object' ? hit.schema : `${hit.dataType} · ${hit.schema}.${hit.objectName}`;
+
+    button.append(kind, name, meta);
+    button.addEventListener('click', () => openHit(hit));
+    list.appendChild(button);
+  }
+
+  if (activeHit >= 0) input.setAttribute('aria-activedescendant', `search-hit-${activeHit}`);
+  else input.removeAttribute('aria-activedescendant');
+}
+
 function render(next: ViewerState): void {
   state = next;
+  ({ highlight, pendingJumps } = reconcileHighlight({ highlight, pendingJumps }, next.selected));
   renderChrome(next);
   renderFilter(next);
-  renderGrid(next);
+  // A state push in the middle of a drag (for example a page that was already
+  // loading) must not rebuild the table under the pointer.
+  if (dragState) pendingGridState = next;
+  else renderGrid(next);
   renderTree(next);
+  renderSearch();
 }
 
 function showToast(message: string, level: 'info' | 'error'): void {
@@ -352,5 +940,98 @@ el('cell-close').addEventListener('click', () => el<HTMLElement>('cell-modal').c
 el('cell-modal').addEventListener('click', (event) => {
   if (event.target === el('cell-modal')) el<HTMLElement>('cell-modal').classList.add('hidden');
 });
+
+const searchInput = el<HTMLInputElement>('search-input');
+searchInput.addEventListener('input', () => {
+  searchQuery = searchInput.value;
+  activeHit = -1;
+  renderSearch();
+});
+searchInput.addEventListener('keydown', (event) => {
+  if (isComposingEvent(event)) return;
+  if (event.key === 'Escape') {
+    if (searchQuery.length === 0) return;
+    event.preventDefault();
+    clearSearch();
+    return;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (searchHits.length === 0) return;
+    event.preventDefault();
+    activeHit = event.key === 'ArrowDown'
+      ? Math.min(searchHits.length - 1, activeHit + 1)
+      : Math.max(0, activeHit - 1);
+    renderSearch();
+    ensureActiveVisible();
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (searchHits.length === 0) return;
+    event.preventDefault();
+    const hit = searchHits[activeHit >= 0 ? activeHit : 0];
+    if (hit) openHit(hit);
+  }
+});
+el('search-clear').addEventListener('click', () => {
+  clearSearch();
+  searchInput.focus();
+});
+
+const columnMenu = el<HTMLElement>('column-menu');
+columnMenu.addEventListener('keydown', (event) => {
+  const items = Array.from(columnMenu.querySelectorAll<HTMLButtonElement>('.column-menu-item'));
+  if (items.length === 0) return;
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const current = items.findIndex((item) => item === document.activeElement);
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const nextIndex = current < 0 ? 0 : (current + delta + items.length) % items.length;
+    items[nextIndex]?.focus();
+    return;
+  }
+  if (event.key === 'Home') {
+    event.preventDefault();
+    items[0]?.focus();
+    return;
+  }
+  if (event.key === 'End') {
+    event.preventDefault();
+    items.at(-1)?.focus();
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeColumnMenu(true);
+  }
+});
+
+document.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (columnMenu.classList.contains('hidden')) return;
+    const target = event.target;
+    if (target instanceof Node && (columnMenu.contains(target) || menuAnchor?.contains(target) === true)) {
+      return;
+    }
+    closeColumnMenu();
+  },
+  true,
+);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeColumnMenu(true);
+});
+window.addEventListener('blur', () => closeColumnMenu());
+window.addEventListener('resize', () => closeColumnMenu());
+document.addEventListener(
+  'scroll',
+  (event) => {
+    if (event.target instanceof Node && columnMenu.contains(event.target)) return;
+    closeColumnMenu();
+  },
+  true,
+);
 
 handlers.ready();

@@ -44,7 +44,17 @@ export function renderHtml(webview: vscode.Webview, mediaRoot: vscode.Uri): stri
     <div id="banner" class="banner hidden"></div>
     <div id="error-panel" class="error-panel hidden"></div>
     <div id="body">
-      <aside id="tree" class="tree"></aside>
+      <aside id="sidebar" class="sidebar">
+        <div class="search-box">
+          <input id="search-input" type="text" role="combobox" placeholder="搜索表、视图或列" autocomplete="off" spellcheck="false" aria-label="搜索表、视图或列" aria-autocomplete="list" aria-controls="search-hits" aria-expanded="false" />
+          <button id="search-clear" class="secondary search-clear hidden" title="清空搜索" aria-label="清空搜索">×</button>
+        </div>
+        <div id="search-results" class="search-results hidden">
+          <div id="search-summary" class="search-summary muted" aria-live="polite"></div>
+          <div id="search-hits" class="search-hits" role="listbox" aria-label="搜索结果"></div>
+        </div>
+        <aside id="tree" class="tree"></aside>
+      </aside>
       <section id="content">
         <div id="toolbar" class="toolbar">
           <span id="object-label" class="object-label">未选择对象</span>
@@ -81,6 +91,7 @@ export function renderHtml(webview: vscode.Webview, mediaRoot: vscode.Uri): stri
         <pre id="cell-text"></pre>
       </div>
     </div>
+    <div id="column-menu" class="column-menu hidden" role="menu" aria-label="列操作"></div>
     <div id="toast" class="toast hidden"></div>
   </div>
   <script nonce="${token}" src="${scriptUri}"></script>

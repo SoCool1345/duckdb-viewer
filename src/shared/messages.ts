@@ -1,3 +1,4 @@
+import type { ColumnLayout } from './columnLayout';
 import type {
   ErrorCode,
   FetchPageResult,
@@ -19,6 +20,7 @@ export const WEBVIEW_MESSAGE_TYPES = [
   'sort',
   'filter',
   'clearFilter',
+  'setColumnLayout',
   'nextPage',
   'prevPage',
   'refresh',
@@ -41,6 +43,7 @@ export type WebviewMessage =
   | { type: 'sort'; column: string }
   | { type: 'filter'; column: string; op: FilterOp; value: string }
   | { type: 'clearFilter' }
+  | { type: 'setColumnLayout'; schema: string; name: string; kind: 'table' | 'view'; layout: ColumnLayout }
   | { type: 'nextPage' }
   | { type: 'prevPage' }
   | { type: 'refresh' }
@@ -62,6 +65,8 @@ export interface ViewerState {
   dbName: string;
   schemas: SchemaGroup[];
   selected: { schema: string; name: string; kind: 'table' | 'view' } | null;
+  /** Column width/hidden/pinned settings for the selected object. */
+  columnLayout: ColumnLayout | null;
   columns: Array<{ name: string; dataType: string }>;
   rows: PageRow[];
   pageIndex: number;
@@ -103,6 +108,7 @@ export function emptyState(dbName: string, pageSize: number): ViewerState {
     dbName,
     schemas: [],
     selected: null,
+    columnLayout: null,
     columns: [],
     rows: [],
     pageIndex: 0,

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { ColumnLayoutStore } from '../src/host/columnLayoutStore';
 import { DbSession } from '../src/host/session';
 import { RpcError } from '../src/host/rpcClient';
 import type { HelperClient } from '../src/host/rpcClient';
 import { emptyState } from '../src/shared/messages';
 import type { ViewerState } from '../src/shared/messages';
 import type { FetchPageParams, FetchPageResult, ListSchemaResult } from '../src/shared/protocol';
+import { MemoryMemento } from './helpers/memoryMemento';
 
 const FINGERPRINT = { mtimeMs: 1_000, size: 4_096 };
 
@@ -25,6 +27,17 @@ const SCHEMA: ListSchemaResult = {
           ],
           constraints: [],
           estimatedRows: 3,
+        },
+        {
+          schema: 'main',
+          name: 'orders',
+          kind: 'table',
+          columns: [
+            { name: 'id', dataType: 'BIGINT', nullable: false },
+            { name: 'total', dataType: 'DOUBLE', nullable: true },
+          ],
+          constraints: [],
+          estimatedRows: 2,
         },
       ],
     },
@@ -63,10 +76,19 @@ function fakePage(params: FetchPageParams): FetchPageResult {
 function makeSession(
   handler: (call: Call) => Promise<unknown>,
   overrides: Partial<{ pageSize: number }> = {},
-): { session: DbSession; states: ViewerState[]; calls: Call[]; toasts: string[] } {
+): {
+  session: DbSession;
+  states: ViewerState[];
+  calls: Call[];
+  toasts: string[];
+  columnLayouts: ColumnLayoutStore;
+  memento: MemoryMemento;
+} {
   const states: ViewerState[] = [];
   const calls: Call[] = [];
   const toasts: string[] = [];
+  const memento = new MemoryMemento();
+  const columnLayouts = new ColumnLayoutStore(memento);
   const client = {
     request: async (method: string, params: unknown, _timeout?: number, onId?: (id: number) => void) => {
       const call = { method, params: structuredClone(params) as unknown };
@@ -83,6 +105,7 @@ function makeSession(
     pageSize: overrides.pageSize ?? 2,
     operationTimeoutMs: 5_000,
     maxCellBytes: 4096,
+    columnLayouts,
     waitIntervalMs: 10,
     onState: (state) => states.push(state),
     onBusyChange: () => undefined,
@@ -90,7 +113,7 @@ function makeSession(
     onToast: (level, message) => toasts.push(`${level}:${message}`),
   });
 
-  return { session, states, calls, toasts };
+  return { session, states, calls, toasts, columnLayouts, memento };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
@@ -336,6 +359,107 @@ describe('DbSession', () => {
       }),
     );
     await waitFor(() => latest(states).busy === false);
+    session.dispose();
+  });
+
+  it('applies a column layout without reading the database', async () => {
+    const { session, states, calls, columnLayouts } = makeSession(handlerFor());
+    session.start();
+    await waitFor(() => latest(states).rows.length > 0);
+    const pagesBefore = calls.filter((call) => call.method === 'fetchPage').length;
+
+    session.handleMessage({
+      type: 'setColumnLayout',
+      schema: 'main',
+      name: 'users',
+      kind: 'table',
+      layout: {
+        version: 1,
+        columns: { email: { width: 5_000, hidden: false }, name: { hidden: true } },
+      },
+    });
+
+    await waitFor(() => latest(states).columnLayout?.columns.name?.hidden === true);
+    expect(calls.filter((call) => call.method === 'fetchPage')).toHaveLength(pagesBefore);
+    expect(latest(states).rows.length).toBeGreaterThan(0);
+
+    const saved = columnLayouts.load('C:/data/test.duckdb', {
+      schema: 'main',
+      name: 'users',
+      kind: 'table',
+    });
+    expect(saved.columns).toEqual({ email: { width: 2_000 }, name: { hidden: true } });
+    session.dispose();
+  });
+
+  it('clears the sort and refetches the first page when the sorted column is hidden', async () => {
+    const { session, states, calls } = makeSession(handlerFor());
+    session.start();
+    await waitFor(() => latest(states).rows.length > 0);
+
+    session.handleMessage({ type: 'sort', column: 'name' });
+    await waitFor(() => latest(states).sort?.direction === 'asc' && latest(states).busy === false);
+    const pagesBefore = calls.filter((call) => call.method === 'fetchPage').length;
+
+    session.handleMessage({
+      type: 'setColumnLayout',
+      schema: 'main',
+      name: 'users',
+      kind: 'table',
+      layout: { version: 1, columns: { name: { hidden: true } } },
+    });
+
+    await waitFor(
+      () =>
+        latest(states).sort === null &&
+        calls.filter((call) => call.method === 'fetchPage').length === pagesBefore + 1,
+    );
+
+    const lastPage = calls.filter((call) => call.method === 'fetchPage').at(-1)?.params as FetchPageParams;
+    expect(lastPage.sort).toBeUndefined();
+    expect(lastPage.cursor).toEqual({ kind: 'rowid' });
+    expect(latest(states).pageIndex).toBe(0);
+    session.dispose();
+  });
+
+  it('keeps layouts isolated per object and restores them when the object is selected again', async () => {
+    const { session, states, columnLayouts } = makeSession(handlerFor());
+    await columnLayouts.save(
+      'C:/data/test.duckdb',
+      { schema: 'main', name: 'orders', kind: 'table' },
+      { version: 1, columns: { id: { pinned: true }, total: { hidden: true } } },
+    );
+
+    session.start();
+    await waitFor(() => latest(states).selected?.name === 'users' && latest(states).rows.length > 0);
+    expect(latest(states).columnLayout).toEqual({ version: 1, columns: {} });
+
+    session.handleMessage({ type: 'selectObject', schema: 'main', name: 'orders', kind: 'table' });
+    await waitFor(() => latest(states).selected?.name === 'orders' && latest(states).rows.length > 0);
+    expect(latest(states).columnLayout).toEqual({
+      version: 1,
+      columns: { id: { pinned: true }, total: { hidden: true } },
+    });
+
+    session.handleMessage({
+      type: 'setColumnLayout',
+      schema: 'main',
+      name: 'orders',
+      kind: 'table',
+      layout: { version: 1, columns: { id: { hidden: true } } },
+    });
+    await waitFor(() => latest(states).columnLayout?.columns.id?.hidden === true);
+
+    session.handleMessage({ type: 'selectObject', schema: 'main', name: 'users', kind: 'table' });
+    await waitFor(() => latest(states).selected?.name === 'users' && latest(states).rows.length > 0);
+    expect(latest(states).columnLayout).toEqual({ version: 1, columns: {} });
+
+    session.handleMessage({ type: 'selectObject', schema: 'main', name: 'orders', kind: 'table' });
+    await waitFor(() => latest(states).selected?.name === 'orders' && latest(states).rows.length > 0);
+    expect(latest(states).columnLayout).toEqual({
+      version: 1,
+      columns: { id: { hidden: true } },
+    });
     session.dispose();
   });
 });

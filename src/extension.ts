@@ -1,10 +1,12 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { ColumnLayoutStore } from './host/columnLayoutStore';
 import { DuckDbEditorProvider } from './host/editorProvider';
 import type { ViewerRuntime } from './host/editorProvider';
 import { HelperClient } from './host/rpcClient';
 import { shouldShowStatus, statusLabel } from './host/status';
 import type { DbSession } from './host/session';
+import type { ColumnLayout } from './shared/columnLayout';
 import type { StatusResult } from './shared/protocol';
 
 class Runtime implements ViewerRuntime {
@@ -13,8 +15,10 @@ class Runtime implements ViewerRuntime {
   private readonly busySessions = new Set<DbSession>();
   private readonly statusItem: vscode.StatusBarItem;
   private readonly output: vscode.OutputChannel;
+  private readonly columnLayoutStore: ColumnLayoutStore;
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    this.columnLayoutStore = new ColumnLayoutStore(context.globalState);
     this.statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.statusItem.command = 'duckdbViewer.showDiagnostics';
     this.statusItem.tooltip = 'DuckDB Viewer：点击查看锁诊断';
@@ -40,6 +44,10 @@ class Runtime implements ViewerRuntime {
 
   maxCellBytes(): number {
     return vscode.workspace.getConfiguration('duckdbViewer').get<number>('maxCellBytes', 4096);
+  }
+
+  columnLayouts(): ColumnLayoutStore {
+    return this.columnLayoutStore;
   }
 
   registerSession(session: DbSession): void {
@@ -108,7 +116,17 @@ class Runtime implements ViewerRuntime {
     for (const session of this.sessions) session.handleMessage({ type: 'selectObject', ...selection });
   }
 
+  applyColumnLayout(payload: {
+    schema: string;
+    name: string;
+    kind: 'table' | 'view';
+    layout: ColumnLayout;
+  }): void {
+    for (const session of this.sessions) session.handleMessage({ type: 'setColumnLayout', ...payload });
+  }
+
   async dispose(): Promise<void> {
+    await this.columnLayoutStore.flush();
     await this.client?.dispose();
   }
 }
@@ -157,6 +175,11 @@ export function activate(context: vscode.ExtensionContext): void {
         if (action === 'refresh') runtime?.refreshAll();
         if (action === 'select' && payload) {
           runtime?.selectAll(payload as { schema: string; name: string; kind: 'table' | 'view' });
+        }
+        if (action === 'layout' && payload) {
+          runtime?.applyColumnLayout(
+            payload as { schema: string; name: string; kind: 'table' | 'view'; layout: ColumnLayout },
+          );
         }
         return runtime?.debugSessions() ?? [];
       }),

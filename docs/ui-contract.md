@@ -13,6 +13,7 @@
 | `sort` | `column` | 切换该列排序（升序 → 降序 → 取消） |
 | `filter` | `column`, `op: 'eq' \| 'contains' \| 'gt' \| 'lt'`, `value` | 应用单列过滤，回到第一页 |
 | `clearFilter` | — | 清除过滤 |
+| `setColumnLayout` | `schema`, `name`, `kind: 'table' \| 'view'`, `layout: ColumnLayout` | 保存当前对象的列宽/隐藏/固定设置；不读取数据库。若隐藏了当前排序列，宿主会清除排序并重新读取第一页 |
 | `nextPage` | — | 下一页 |
 | `prevPage` | — | 上一页 |
 | `refresh` | — | 重读 schema 与当前页 |
@@ -36,6 +37,7 @@
 - `busy`：是否有请求正在进行；为真时界面显示"查询中（持有锁）"并提供取消按钮
 - `lock`：被其他进程占用时的信息（`pid`、`processName`、`waiting`）
 - `banner`：外部写入提示
+- `columnLayout`：当前选中对象的列布局（`{ version: 1, columns: { <列名>: { width?, hidden?, pinned? } } }`）；没有选中对象时为 `null`
 - `rows[].truncated`：该行中被截断的列下标，双击可请求完整值
 - `stableOrder`：为假时界面标注"顺序不保证稳定"
 
