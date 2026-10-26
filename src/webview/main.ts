@@ -1,5 +1,7 @@
 import type { ViewerState } from '../shared/messages';
+import { searchSchema, type SearchHit } from '../shared/search';
 import { createHandlers } from './handlers';
+import { isComposingEvent, reconcileHighlight, type ColumnHighlight, type ObjectRef } from './interaction';
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 
@@ -12,6 +14,15 @@ const expandedObjects = new Set<string>();
 const collapsedSchemas = new Set<string>();
 let toastTimer: number | undefined;
 
+let searchQuery = '';
+let searchHits: SearchHit[] = [];
+let searchTotal = 0;
+let searchTruncated = false;
+let activeHit = -1;
+let highlight: ColumnHighlight | null = null;
+let pendingJumps: ObjectRef[] = [];
+let revealHighlight = false;
+
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) throw new Error(`Missing element: ${id}`);
@@ -22,9 +33,16 @@ function icon(kind: 'table' | 'view'): string {
   return kind === 'table' ? '▦' : '◧';
 }
 
+function objectKey(schema: string, name: string, kind: 'table' | 'view'): string {
+  return `${schema}\u0000${name}\u0000${kind}`;
+}
+
 function renderTree(next: ViewerState): void {
   const tree = el<HTMLElement>('tree');
   tree.textContent = '';
+  const shouldReveal = revealHighlight;
+  revealHighlight = false;
+  let highlightElement: HTMLElement | null = null;
 
   if (next.schemas.length === 0) {
     const empty = document.createElement('p');
@@ -58,7 +76,7 @@ function renderTree(next: ViewerState): void {
       const children = document.createElement('div');
       children.className = 'tree-children';
       for (const object of group.objects) {
-        const key = `${group.name}\u0000${object.name}\u0000${object.kind}`;
+        const key = objectKey(group.name, object.name, object.kind);
         const row = document.createElement('div');
         row.className = 'tree-row object-row';
         if (next.selected?.schema === group.name && next.selected.name === object.name && next.selected.kind === object.kind) {
@@ -82,6 +100,7 @@ function renderTree(next: ViewerState): void {
         name.textContent = `${icon(object.kind)} ${object.name}`;
         name.title = `${object.kind === 'table' ? '表' : '视图'} / ${group.name}`;
         name.addEventListener('click', () => {
+          clearHighlight();
           handlers.selectObject({ schema: group.name, name: object.name, kind: object.kind });
         });
 
@@ -94,6 +113,16 @@ function renderTree(next: ViewerState): void {
           for (const column of object.columns) {
             const line = document.createElement('div');
             line.className = 'column-row';
+            if (
+              highlight &&
+              highlight.schema === group.name &&
+              highlight.objectName === object.name &&
+              highlight.objectKind === object.kind &&
+              highlight.columnName === column.name
+            ) {
+              line.classList.add('highlight');
+              highlightElement = line;
+            }
             const columnName = document.createElement('span');
             columnName.textContent = column.name;
             const type = document.createElement('span');
@@ -109,6 +138,10 @@ function renderTree(next: ViewerState): void {
       schemaNode.appendChild(children);
     }
     tree.appendChild(schemaNode);
+  }
+
+  if (shouldReveal && highlightElement) {
+    highlightElement.scrollIntoView({ block: 'nearest' });
   }
 }
 
@@ -292,12 +325,126 @@ function renderChrome(next: ViewerState): void {
   el<HTMLElement>('order-note').textContent = next.selected && !next.stableOrder ? '顺序不保证稳定' : '';
 }
 
+function openHit(hit: SearchHit): void {
+  if (hit.kind === 'column') {
+    highlight = { schema: hit.schema, objectName: hit.objectName, objectKind: hit.objectKind, columnName: hit.columnName };
+    pendingJumps.push({ schema: hit.schema, objectName: hit.objectName, objectKind: hit.objectKind });
+    expandedObjects.add(objectKey(hit.schema, hit.objectName, hit.objectKind));
+    collapsedSchemas.delete(hit.schema);
+    revealHighlight = true;
+  } else {
+    highlight = null;
+    pendingJumps = [];
+  }
+  handlers.selectObject({ schema: hit.schema, name: hit.objectName, kind: hit.objectKind });
+  if (state) renderTree(state);
+}
+
+function clearHighlight(): void {
+  if (!highlight) return;
+  highlight = null;
+  pendingJumps = [];
+  if (state) renderTree(state);
+}
+
+function clearSearch(): void {
+  searchQuery = '';
+  activeHit = -1;
+  el<HTMLInputElement>('search-input').value = '';
+  clearHighlight();
+  renderSearch();
+}
+
+function ensureActiveVisible(): void {
+  if (activeHit < 0) return;
+  document.getElementById(`search-hit-${activeHit}`)?.scrollIntoView({ block: 'nearest' });
+}
+
+function renderSearch(): void {
+  const input = el<HTMLInputElement>('search-input');
+  const results = el<HTMLElement>('search-results');
+  const clearButton = el<HTMLButtonElement>('search-clear');
+  const summary = el<HTMLElement>('search-summary');
+  const list = el<HTMLElement>('search-hits');
+
+  const active = searchQuery.trim().length > 0;
+  results.classList.toggle('hidden', !active);
+  clearButton.classList.toggle('hidden', !active);
+  input.setAttribute('aria-expanded', active ? 'true' : 'false');
+
+  if (!active) {
+    searchHits = [];
+    searchTotal = 0;
+    searchTruncated = false;
+    activeHit = -1;
+    summary.textContent = '';
+    list.textContent = '';
+    input.removeAttribute('aria-activedescendant');
+    if (highlight) {
+      highlight = null;
+      pendingJumps = [];
+      if (state) renderTree(state);
+    }
+    return;
+  }
+
+  const result = searchSchema(state?.schemas ?? [], searchQuery);
+  searchHits = result.hits;
+  searchTotal = result.total;
+  searchTruncated = result.truncated;
+  if (activeHit >= searchHits.length) activeHit = searchHits.length - 1;
+
+  summary.textContent =
+    searchTotal > 0 ? `${searchTotal.toLocaleString()} 条结果${searchTruncated ? '（仅显示前 200 条）' : ''}` : '';
+
+  list.textContent = '';
+  if (searchHits.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'tree-empty';
+    empty.textContent = '没有匹配的表、视图或列。';
+    list.appendChild(empty);
+    input.removeAttribute('aria-activedescendant');
+    return;
+  }
+
+  for (const [index, hit] of searchHits.entries()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'search-hit';
+    button.id = `search-hit-${index}`;
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', index === activeHit ? 'true' : 'false');
+    if (index === activeHit) button.classList.add('active');
+
+    const kind = document.createElement('span');
+    kind.className = 'search-hit-kind';
+    kind.textContent = hit.kind === 'object' ? (hit.objectKind === 'table' ? '表' : '视图') : '列';
+
+    const name = document.createElement('span');
+    name.className = 'search-hit-name';
+    name.textContent = hit.kind === 'object' ? `${icon(hit.objectKind)} ${hit.objectName}` : hit.columnName;
+
+    const meta = document.createElement('span');
+    meta.className = 'search-hit-meta';
+    meta.textContent = hit.kind === 'object' ? hit.schema : `${hit.dataType} · ${hit.schema}.${hit.objectName}`;
+
+    button.append(kind, name, meta);
+    button.addEventListener('click', () => openHit(hit));
+    list.appendChild(button);
+  }
+
+  if (activeHit >= 0) input.setAttribute('aria-activedescendant', `search-hit-${activeHit}`);
+  else input.removeAttribute('aria-activedescendant');
+}
+
 function render(next: ViewerState): void {
   state = next;
+  ({ highlight, pendingJumps } = reconcileHighlight({ highlight, pendingJumps }, next.selected));
   renderChrome(next);
   renderFilter(next);
   renderGrid(next);
   renderTree(next);
+  renderSearch();
 }
 
 function showToast(message: string, level: 'info' | 'error'): void {
@@ -351,6 +498,42 @@ el('filter-clear').addEventListener('click', () => handlers.clearFilter());
 el('cell-close').addEventListener('click', () => el<HTMLElement>('cell-modal').classList.add('hidden'));
 el('cell-modal').addEventListener('click', (event) => {
   if (event.target === el('cell-modal')) el<HTMLElement>('cell-modal').classList.add('hidden');
+});
+
+const searchInput = el<HTMLInputElement>('search-input');
+searchInput.addEventListener('input', () => {
+  searchQuery = searchInput.value;
+  activeHit = -1;
+  renderSearch();
+});
+searchInput.addEventListener('keydown', (event) => {
+  if (isComposingEvent(event)) return;
+  if (event.key === 'Escape') {
+    if (searchQuery.length === 0) return;
+    event.preventDefault();
+    clearSearch();
+    return;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (searchHits.length === 0) return;
+    event.preventDefault();
+    activeHit = event.key === 'ArrowDown'
+      ? Math.min(searchHits.length - 1, activeHit + 1)
+      : Math.max(0, activeHit - 1);
+    renderSearch();
+    ensureActiveVisible();
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (searchHits.length === 0) return;
+    event.preventDefault();
+    const hit = searchHits[activeHit >= 0 ? activeHit : 0];
+    if (hit) openHit(hit);
+  }
+});
+el('search-clear').addEventListener('click', () => {
+  clearSearch();
+  searchInput.focus();
 });
 
 handlers.ready();
