@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { ViewerState } from '../shared/messages';
+import type { ColumnLayoutStore } from './columnLayoutStore';
 import { HelperClient } from './rpcClient';
 import { DbSession } from './session';
 import { renderHtml } from './webviewHtml';
@@ -10,6 +11,7 @@ export interface ViewerRuntime {
   pageSize(): number;
   operationTimeoutMs(): number;
   maxCellBytes(): number;
+  columnLayouts(): ColumnLayoutStore;
   registerSession(session: DbSession): void;
   unregisterSession(session: DbSession): void;
   publishBusy(session: DbSession, busy: boolean): void;
@@ -59,6 +61,7 @@ export class DuckDbEditorProvider implements vscode.CustomReadonlyEditorProvider
       pageSize: this.runtime.pageSize(),
       operationTimeoutMs: this.runtime.operationTimeoutMs(),
       maxCellBytes: this.runtime.maxCellBytes(),
+      columnLayouts: this.runtime.columnLayouts(),
       onState: (state: ViewerState) => {
         void panel.webview.postMessage({ type: 'state', state });
       },

@@ -1,3 +1,4 @@
+import { normalizeLayout } from '../shared/columnLayout';
 import type { WebviewMessage, WebviewMessageType } from '../shared/messages';
 
 export interface WebviewApi {
@@ -20,6 +21,14 @@ export function createHandlers(api: WebviewApi): Record<WebviewMessageType, Hand
     filter: (message) =>
       api.post({ type: 'filter', column: String(message.column), op: message.op, value: String(message.value) }),
     clearFilter: () => api.post({ type: 'clearFilter' }),
+    setColumnLayout: (message) =>
+      api.post({
+        type: 'setColumnLayout',
+        schema: String(message.schema),
+        name: String(message.name),
+        kind: message.kind === 'view' ? 'view' : 'table',
+        layout: normalizeLayout(message.layout),
+      }),
     nextPage: () => api.post({ type: 'nextPage' }),
     prevPage: () => api.post({ type: 'prevPage' }),
     refresh: () => api.post({ type: 'refresh' }),

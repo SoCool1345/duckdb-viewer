@@ -91,6 +91,7 @@ export function renderHtml(webview: vscode.Webview, mediaRoot: vscode.Uri): stri
         <pre id="cell-text"></pre>
       </div>
     </div>
+    <div id="column-menu" class="column-menu hidden" role="menu" aria-label="列操作"></div>
     <div id="toast" class="toast hidden"></div>
   </div>
   <script nonce="${token}" src="${scriptUri}"></script>
