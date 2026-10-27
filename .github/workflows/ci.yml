@@ -15,7 +15,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         node: [20]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -53,7 +53,7 @@ jobs:
           - os: ubuntu-latest
             command: xvfb-run -a npm run test:electron
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -92,7 +92,7 @@ jobs:
           - os: ubuntu-latest
             target: linux-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
